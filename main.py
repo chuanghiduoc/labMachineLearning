@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np # lam viec voi ma tran & array
-from sklearn.model_selection import train_test_split # chia tap dl thanh 2 phan traning data & test data
+from sklearn.model_selection import train_test_split, cross_val_score # chia tap dl thanh 2 phan traning data & test data
 from sklearn import decomposition # giam chieu dl
 from sklearn.tree import DecisionTreeClassifier # cay phan lop
 from sklearn.metrics import confusion_matrix # ma tran nham lan
@@ -11,13 +11,18 @@ from sklearn.impute import SimpleImputer
 from tkinter import messagebox
 import seaborn as sns
 import matplotlib.pyplot as plt
-from sklearn.model_selection import train_test_split, cross_val_score
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestClassifier, StackingClassifier
 from sklearn.ensemble import AdaBoostClassifier
 import pickle
+from sklearn.metrics import classification_report, accuracy_score
+from sklearn.svm import SVC
+from sklearn.neighbors import KNeighborsClassifier
+from imblearn.over_sampling import SMOTE
+from imblearn.under_sampling import RandomUnderSampler
+from sklearn.preprocessing import StandardScaler
 
 # Đọc file
-df = pd.read_csv('healthcare-dataset-stroke-data.csv')
+df = pd.read_csv('dataSetStroke.csv')
 
 # Map các cột phân loại thành các giá trị số
 df['gender'] = df['gender'].map({'Male': 0, 'Female': 1})
@@ -28,11 +33,22 @@ df['smoking_status'] = df['smoking_status'].map({'never smoked': 0, 'formerly sm
 
 # Ma trận dữ liệu X
 X = np.array(df.drop(columns=['stroke', 'id']))
+
 # Ma trận nhãn lớp Y
 y = np.array([df["stroke"]]).T
-print(X.shape)
+
 imputer = SimpleImputer(strategy="mean")
 X = imputer.fit_transform(X)
+
+# Chia tập dữ liệu thành tập huấn luyện và tập kiểm tra: 70% train, 20% validation, 10% test
+X_train, X_temp, y_train, y_temp = train_test_split(X, y, test_size=0.3, shuffle=True, random_state=42)
+
+# Cân bằng lớp bằng SMOTE
+smote = SMOTE(random_state=42)
+X_train_resampled, y_train_resampled = smote.fit_resample(X_train, y_train)
+
+# Chia tập dữ liệu thành tập xác thực và tập kiểm tra
+X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, shuffle=True, random_state=42)
 
 # Chọn tập có n thuộc tính tốt nhất bằng phương pháp PCA
 train_scores = []  # Danh sách lưu trữ độ chính xác trên tập huấn luyện
@@ -43,30 +59,28 @@ score = 0
 for i in range(1, X.shape[1] + 1):
     print("Lần:", i)
     pca = decomposition.PCA(n_components=i)
-    pca.fit(X)
-    Xbar = pca.transform(X)  # Áp dụng giảm kích thước cho X.
-
-    # Chia tập dữ liệu thành tập huấn luyện và tập kiểm tra
-    X_train, X_test, y_train, y_test = train_test_split(Xbar, y, test_size=0.3, shuffle=True)
+    pca.fit(X_train_resampled)
+    X_train_pca = pca.transform(X_train_resampled)
+    X_val_pca = pca.transform(X_val)
+    X_test_pca = pca.transform(X_test)
 
     # Tạo mô hình cây quyết định
-    # model = RandomForestClassifier(n_estimators=100, max_depth=3)
-    # model = DecisionTreeClassifier(criterion="gini", max_depth=3, min_samples_split=50, min_samples_leaf=15, ccp_alpha=0.01)
     model = DecisionTreeClassifier(criterion="gini")
-    # noise = np.random.normal(0, 0.1, X_train.shape)  # Tạo nhiễu
-    # X_train_noisy = X_train + noise 
-    model.fit(X_train, y_train)
+    model.fit(X_train_pca, y_train_resampled)
 
-    # Dự đoán trên tập huấn luyện và kiểm tra
-    y_train_pred = model.predict(X_train)
-    y_test_pred = model.predict(X_test)
+    # Dự đoán
+    y_train_pred = model.predict(X_train_pca)
+    y_val_pred = model.predict(X_val_pca)
+    y_test_pred = model.predict(X_test_pca)
 
     # Tính toán độ chính xác
-    train_score = accuracy_score(y_train, y_train_pred)
+    train_score = accuracy_score(y_train_resampled, y_train_pred)
+    val_score = accuracy_score(y_val, y_val_pred)
     test_score = accuracy_score(y_test, y_test_pred)
-    cv_scores = cross_val_score(model, X, y, cv=5)
+    cv_scores = cross_val_score(model, X_train_pca, y_train_resampled, cv=5)
 
     print(f"Độ chính xác trên tập huấn luyện: {train_score:.2f}")
+    print(f"Độ chính xác trên tập xác thực: {val_score:.2f}")
     print(f"Độ chính xác trên tập kiểm tra: {test_score:.2f}")
     print(f"Độ chính xác trung bình (Cross-Validation): {cv_scores.mean():.2f}")
 
@@ -74,17 +88,60 @@ for i in range(1, X.shape[1] + 1):
     train_scores.append(train_score)
     test_scores.append(test_score)
 
-    if test_score >= score:
-        score = test_score
+    if val_score >= score:
+        score = val_score
         n = i
-    
 
 # Sử dụng tập n thuộc tính tốt đã chọn để tạo ra tập huấn luyện (train) và tập kiểm tra (test) mới
 print("N_components:", n)
 main_pca = decomposition.PCA(n_components=n)
 main_pca.fit(X)
-Xbar1 = main_pca.transform(X)
-X_train1, X_test1, y_train1, y_test1 = train_test_split(Xbar1, y, test_size=0.3, shuffle=True)
+
+# Save the PCA model
+with open('pca_model.pkl', 'wb') as pca_file:
+    pickle.dump(main_pca, pca_file)
+
+print("PCA model has been saved to 'pca_model.pkl'.")
+
+X_train1 = main_pca.transform(X_train_resampled)
+X_val1 = main_pca.transform(X_val)
+X_test1 = main_pca.transform(X_test)
+
+# Các mô hình cần đánh giá
+models = {
+    'Decision Tree': DecisionTreeClassifier(criterion="gini"),
+    'Random Forest': RandomForestClassifier(random_state=42),
+    'SVM': SVC(),
+    'KNN': KNeighborsClassifier()
+}
+
+# Đánh giá các mô hình trước và sau khi áp dụng PCA
+results = {'Model': [], 'Accuracy Without PCA': [], 'Accuracy With PCA': []}
+
+for model_name, model in models.items():
+    # Huấn luyện và đánh giá trên dữ liệu chưa áp dụng PCA
+    model.fit(X_train_resampled, y_train_resampled)
+    y_pred = model.predict(X_test)
+    acc_without_pca = accuracy_score(y_test, y_pred)
+
+    # Huấn luyện và đánh giá trên dữ liệu đã áp dụng PCA
+    model.fit(X_train_pca, y_train_resampled)
+    y_pred_pca = model.predict(X_test_pca)
+    acc_with_pca = accuracy_score(y_test, y_pred_pca)
+
+    # Lưu kết quả vào bảng kết quả
+    results['Model'].append(model_name)
+    results['Accuracy Without PCA'].append(acc_without_pca)
+    results['Accuracy With PCA'].append(acc_with_pca)
+
+    # In kết quả cho từng mô hình
+    print(f"{model_name} - Accuracy Without PCA: {acc_without_pca:.2f}")
+    print(f"{model_name} - Accuracy With PCA: {acc_with_pca:.2f}")
+    print("\n" + "="*50 + "\n")
+
+# Chuyển bảng kết quả thành DataFrame để dễ hiển thị
+results_df = pd.DataFrame(results)
+print(results_df)
 
 def plot_accuracy_scores(train_scores, test_scores, max_components):
     """
@@ -109,22 +166,19 @@ def plot_accuracy_scores(train_scores, test_scores, max_components):
 # plot_accuracy_scores(train_scores, test_scores, X.shape[1])
 
 # dung CART (cay phan lop) de xd mo hinh
-mainModel = DecisionTreeClassifier(criterion = "gini")
-print("Số đặc trưng trong tập huấn luyện:", X_train1.shape[1])
+# mainModel = DecisionTreeClassifier(criterion = "gini")
+mainModel = RandomForestClassifier(criterion="gini", n_estimators=500, random_state=42)
 
 # AdaBoostClassifier(DecisionTreeClassifier(max_depth=3), n_estimators=50)
 
 # Huấn luyện mô hình
-mainModel.fit(X_train1, y_train1)
+mainModel.fit(X_train1, y_train_resampled)
 
 with open('model_stroke.pkl', 'wb') as model_file:
     pickle.dump(mainModel, model_file)
 
 print("Mô hình đã được lưu vào 'model_stroke.pkl'.")
-with open('model_stroke.pkl', 'rb') as feature_file:
-    feature_names = pickle.load(feature_file)
 
-print("Các đặc trưng đã được sử dụng trong mô hình:", feature_names)
 y_pred1 = mainModel.predict(X_test1)
 
 # ma tran nham lan
@@ -134,7 +188,7 @@ y_pred1 = mainModel.predict(X_test1)
 #      true | positive |  True positive (TP) | False Negative (FN)
 #           | negative |  False positive (FP)| True Negative (TN)
 
-cnf_matrix = confusion_matrix(y_test1, y_pred1)
+cnf_matrix = confusion_matrix(y_test, y_pred1)
 print('Ma trận nhầm lẫn:')
 print(cnf_matrix)
 
@@ -145,7 +199,7 @@ def cm2pr_binary(cm):
     return (p, r)
 
 # danh gia mo hinh
-acc = accuracy_score(y_test1, y_pred1) #do cxac
+acc = accuracy_score(y_test, y_pred1) #do cxac
 # precision = là tỷ lệ số điểm true positive (TP) trong tổng số điểm được phân loại là positive (TP + FP)
 # recall = là tỷ lệ số điểm true positive (TP) trong tổng số điểm thực sự là positive (TP + FN)
 precision,recall = cm2pr_binary(cnf_matrix)
@@ -157,6 +211,16 @@ print('Precision = {0:.2f}'.format(precision))
 print('Recall = {0:.2f}'.format(recall))
 print('F1-score = {0:.2f}'.format(f1_score))
 
+y_pred = mainModel.predict(X_test1)
+print(classification_report(y_test, y_pred1))
+# Chạy và đánh giá các mô hình, ví dụ với SVM và RandomForest:
+# models = {'Random Forest': RandomForestClassifier(), 'SVM': SVC(), 'KNN': KNeighborsClassifier()}
+# results = {}
+# for model_name, model in models.items():
+#     model.fit(X_train, y_train)
+#     y_pred = model.predict(X_test)
+#     results[model_name] = accuracy_score(y_test, y_pred)
+# print("Model tốt nhất:", max(results, key=results.get))
 def show_confusion_matrix():
     plt.figure(figsize=(6, 4))
     sns.heatmap(cnf_matrix, annot=True, fmt="d", cmap="viridis", cbar=False)
